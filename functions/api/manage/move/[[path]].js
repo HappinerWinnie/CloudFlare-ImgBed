@@ -114,53 +114,84 @@ export async function onRequest(context) {
 // 移动单个文件的核心函数
 async function moveFile(env, fileId, newFileId, cdnUrl, url) {
     try {
-        // 读取图片信息
-        const img = await env.img_url.getWithMetadata(fileId);
+        // 读取图片信息 D1
+        const stmtSelect = env.DB.prepare('SELECT * FROM image_metadata WHERE id = ?');
+        const dbRecord = await stmtSelect.bind(fileId).first();
+
+        if (!dbRecord) {
+            console.warn(`Metadata for ${fileId} not found in D1 for moving.`);
+            return false; 
+        }
+
+        // Create a mutable copy for new metadata
+        const newDbRecord = { ...dbRecord };
+        newDbRecord.id = newFileId; // Update ID for the new record
+        newDbRecord.folder_path = newFileId.split('/').slice(0, -1).join('/') || 'root';
+
+        // 旧版 Telegram 渠道和 Telegraph 渠道不支持移动 (value_placeholder might be relevant for TelegramNew)
+        if (dbRecord.storage_channel === 'Telegram' || dbRecord.storage_channel === undefined) {
+            // Check original KV's behavior for undefined channel. Here we assume it means old Telegraph
+             throw new Error('Unsupported Channel for move: ' + dbRecord.storage_channel);
+        }
+
 
         // 如果是R2渠道的图片，需要移动R2中对应的图片
-        if (img.metadata?.Channel === 'CloudflareR2') {
+        if (dbRecord.storage_channel === 'CloudflareR2') {
             const R2DataBase = env.img_r2;
-
-            // 获取原文件内容
             const object = await R2DataBase.get(fileId);
             if (!object) {
-                throw new Error('R2 Object Not Found');
+                throw new Error('R2 Object Not Found during move');
             }
-
-            // 复制到新位置
             await R2DataBase.put(newFileId, object.body);
-
-            // 删除旧文件
             await R2DataBase.delete(fileId);
         }
 
         // S3 渠道的图片，需要移动S3中对应的图片
-        if (img.metadata?.Channel === 'S3') {
-            const { success, newKey, error } = await moveS3File(img, newFileId);
+        if (dbRecord.storage_channel === 'S3') {
+            // Pass env to moveS3File for S3 credentials
+            // Construct a partial metadata object for moveS3File, similar to what old code expected
+            const s3Metadata = {
+                S3Region: dbRecord.s3_region,
+                S3Endpoint: dbRecord.s3_endpoint,
+                S3BucketName: dbRecord.s3_bucket_name,
+                S3FileKey: dbRecord.s3_file_key 
+            };
+            const { success, newKey: s3NewKey, error } = await moveS3File(env, { metadata: s3Metadata }, newFileId);
             if (success) {
-                // 更新 metadata
-                img.metadata.S3FileKey = newFileId;
-
-                const s3ServerDomain = img.metadata.S3Endpoint.replace(/https?:\/\//, "");
-                img.metadata.S3Location = `https://${img.metadata.S3BucketName}.${s3ServerDomain}/${newKey}`;
+                newDbRecord.s3_file_key = s3NewKey;
+                const s3ServerDomain = dbRecord.s3_endpoint.replace(/https?:\/\//, "");
+                newDbRecord.s3_location = `https://${dbRecord.s3_bucket_name}.${s3ServerDomain}/${s3NewKey}`;
             } else {
-                // do nothing
+                throw new Error('S3 Move Failed: ' + error);
             }
         }
+        
+        // 更新D1存储
+        // 1. 插入新记录
+        const stmtInsert = env.DB.prepare(`
+            INSERT INTO image_metadata (
+                id, file_name, file_type, file_size_mb, upload_ip, upload_address,
+                timestamp, folder_path, storage_channel, channel_name,
+                s3_location, s3_endpoint, s3_region, s3_bucket_name, s3_file_key, value_placeholder
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        `);
+        await stmtInsert.bind(
+            newDbRecord.id, newDbRecord.file_name, newDbRecord.file_type, newDbRecord.file_size_mb,
+            newDbRecord.upload_ip, newDbRecord.upload_address, newDbRecord.timestamp, newDbRecord.folder_path,
+            newDbRecord.storage_channel, newDbRecord.channel_name,
+            newDbRecord.s3_location, newDbRecord.s3_endpoint, newDbRecord.s3_region,
+            newDbRecord.s3_bucket_name, newDbRecord.s3_file_key,
+            dbRecord.value_placeholder
+        ).run();
 
-        // 旧版 Telegram 渠道和 Telegraph 渠道不支持移动
-        if (img.metadata?.Channel === 'Telegram' || img.metadata?.Channel === undefined) {
-            throw new Error('Unsupported Channel');
-        }
+        // 2. 删除旧记录
+        const stmtDelete = env.DB.prepare('DELETE FROM image_metadata WHERE id = ?');
+        await stmtDelete.bind(fileId).run();
 
         // 更新文件夹信息
         const folderPath = newFileId.split('/').slice(0, -1).join('/');
-        img.metadata.Folder = folderPath;
+        newDbRecord.folder_path = folderPath;
         
-        // 更新KV存储
-        await env.img_url.put(newFileId, img.value, { metadata: img.metadata });
-        await env.img_url.delete(fileId);
-
         // 清除CDN缓存
         await purgeCFCache(env, cdnUrl);
 
@@ -187,13 +218,13 @@ async function moveFile(env, fileId, newFileId, cdnUrl, url) {
 }
 
 // 移动 S3 渠道的图片
-async function moveS3File(img, newFileId) {
+async function moveS3File(env, img, newFileId) {
     const s3Client = new S3Client({
         region: img.metadata?.S3Region || "auto",
         endpoint: img.metadata?.S3Endpoint,
         credentials: {
-            accessKeyId: img.metadata?.S3AccessKeyId,
-            secretAccessKey: img.metadata?.S3SecretAccessKey
+            accessKeyId: env.S3_ACCESS_KEY_ID,
+            secretAccessKey: env.S3_SECRET_ACCESS_KEY
         },
     });
 

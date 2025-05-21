@@ -9,13 +9,16 @@ export async function onRequest(context) {
       data, // arbitrary space for passing data between middlewares
     } = context;
     try {
-        // 检查是否配置了KV数据库
-        if (typeof env.img_url == "undefined" || env.img_url == null || env.img_url == "") {
-            return new Response('Error: Please configure KV database', { status: 500 });
+        // 检查是否配置了D1数据库
+        if (typeof env.DB == "undefined" || env.DB == null) {
+            return new Response('Error: Please configure D1 database', { status: 500 });
         }
 
-        const kv = env.img_url;
-        const list = await kv.get("manage@blockipList");
+        const DB = env.DB;
+        const stmt = DB.prepare('SELECT config_value FROM system_configs WHERE config_key = ?');
+        const result = await stmt.bind('manage@blockipList').first();
+        const list = result ? result.config_value : null;
+
         if (list == null) {
             return new Response('', { status: 200 });
         } else {

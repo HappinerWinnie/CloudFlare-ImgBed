@@ -99,25 +99,56 @@ export async function onRequest(context) {
 // 删除单个文件的核心函数
 async function deleteFile(env, fileId, cdnUrl, url) {
     try {
-        // 读取图片信息
-        const img = await env.img_url.getWithMetadata(fileId);
+        // 读取图片信息 D1
+        const stmtSelect = env.DB.prepare('SELECT * FROM image_metadata WHERE id = ?');
+        const dbRecord = await stmtSelect.bind(fileId).first();
+
+        if (!dbRecord) {
+            // If record not in D1, maybe it was only in KV (during migration phase) or truly doesn't exist.
+            // For now, assume if not in D1, it's an error or already deleted.
+            // Optionally, could try to delete from KV if dbRecord is null, as a fallback during transition.
+            console.warn(`Metadata for ${fileId} not found in D1 for deletion.`);
+            // To maintain similar behavior to KV, if not found, KV getWithMetadata would return null, and img.metadata would be undefined.
+            // We can simulate this for channel checks, or just return false early.
+             return false; // Or throw new Error('File metadata not found in D1') if strict.
+        }
+
+        // Reconstruct a partial metadata object similar to what old code expected, if needed for S3/R2 deletion logic
+        const metadata = {
+            Channel: dbRecord.storage_channel,
+            S3Region: dbRecord.s3_region,
+            S3Endpoint: dbRecord.s3_endpoint,
+            // S3AccessKeyId & S3SecretAccessKey should be read from env for deleteS3File
+            S3BucketName: dbRecord.s3_bucket_name,
+            S3FileKey: dbRecord.s3_file_key
+        };
+        // The img object in original code had img.metadata and img.value.
+        // We only need metadata for channel checks and S3 deletion details.
+        const img = { metadata: metadata }; 
 
         // 如果是R2渠道的图片，需要删除R2中对应的图片
         if (img.metadata?.Channel === 'CloudflareR2') {
             const R2DataBase = env.img_r2;
-            await R2DataBase.delete(fileId);
+            await R2DataBase.delete(fileId); // R2 key is the fileId
         }
 
         // S3 渠道的图片，需要删除S3中对应的图片
         if (img.metadata?.Channel === 'S3') {
-            const success = await deleteS3File(img);
+            // Pass env to deleteS3File to access S3 credentials from environment variables
+            const success = await deleteS3File(env, img); // img now contains D1 based metadata
             if (!success) {
                 throw new Error('S3 Delete Failed');
             }
         }
 
-        // 删除KV存储中的记录
-        await env.img_url.delete(fileId);
+        // 删除D1存储中的记录
+        const stmtDelete = env.DB.prepare('DELETE FROM image_metadata WHERE id = ?');
+        const deleteResult = await stmtDelete.bind(fileId).run();
+        
+        // Check if delete was successful (optional, run() might throw on error)
+        // if (deleteResult.changes === 0) {
+        //    console.warn(`No record deleted from D1 for ${fileId}, might have been already deleted.`);
+        // }
 
         // 清除CDN缓存
         await purgeCFCache(env, cdnUrl);
@@ -143,13 +174,13 @@ async function deleteFile(env, fileId, cdnUrl, url) {
 }
 
 // 删除 S3 渠道的图片
-async function deleteS3File(img) {
+async function deleteS3File(env, img) {
     const s3Client = new S3Client({
         region: img.metadata?.S3Region || "auto",
         endpoint: img.metadata?.S3Endpoint,
         credentials: {
-            accessKeyId: img.metadata?.S3AccessKeyId,
-            secretAccessKey: img.metadata?.S3SecretAccessKey
+            accessKeyId: env.S3_ACCESS_KEY_ID,
+            secretAccessKey: env.S3_SECRET_ACCESS_KEY
         },
     });
 

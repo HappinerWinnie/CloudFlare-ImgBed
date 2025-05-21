@@ -9,11 +9,11 @@ export async function onRequest(context) {
       data, // arbitrary space for passing data between middlewares
     } = context;
 
-    const kv = env.img_url
+    const DB = env.DB;
 
     // GET读取设置
     if (request.method === 'GET') {
-        const settings = await getUploadConfig(kv, env)
+        const settings = await getUploadConfig(DB, env)
 
         return new Response(JSON.stringify(settings), {
             headers: {
@@ -27,8 +27,9 @@ export async function onRequest(context) {
         const body = await request.json()
         const settings = body
 
-        // 写入 KV
-        await kv.put('manage@sysConfig@upload', JSON.stringify(settings))
+        // 写入 D1
+        const stmt = DB.prepare('INSERT OR REPLACE INTO system_configs (config_key, config_value) VALUES (?, ?)');
+        await stmt.bind('manage@sysConfig@upload', JSON.stringify(settings)).run();
 
         return new Response(JSON.stringify(settings), {
             headers: {
@@ -39,10 +40,12 @@ export async function onRequest(context) {
 
 }
 
-export async function getUploadConfig(kv, env) {
+export async function getUploadConfig(DB, env) {
     const settings = {}
-    // 读取KV中的设置
-    const settingsStr = await kv.get('manage@sysConfig@upload')
+    // 读取D1中的设置
+    const stmt = DB.prepare('SELECT config_value FROM system_configs WHERE config_key = ?');
+    const result = await stmt.bind('manage@sysConfig@upload').first();
+    const settingsStr = result ? result.config_value : null;
     const settingsKV = settingsStr ? JSON.parse(settingsStr) : {}
 
     // =====================读取tg渠道配置=====================

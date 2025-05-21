@@ -1,0 +1,16 @@
+# Remove old KV binding if it exists by uncommenting and modifying/deleting:
+# kv_namespaces = [
+#  { binding = "img_url", id = "YOUR_KV_NAMESPACE_ID_HERE" }
+# ]
+
+[[d1_databases]]
+binding = "DB" # This is how your Worker will access the D1 database (e.g., env.DB)
+database_name = "YOUR_D1_DATABASE_NAME_HERE" # Replace with your D1 database name
+database_id = "YOUR_D1_DATABASE_ID_HERE" # Replace with your D1 database ID
+
+# Ensure other bindings like R2 are still present if needed
+# [[r2_buckets]]
+# binding = "img_r2"
+# bucket_name = "YOUR_R2_BUCKET_NAME_HERE"
+
+# ... other wrangler.toml content ... 

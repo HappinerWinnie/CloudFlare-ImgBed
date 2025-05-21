@@ -127,10 +127,10 @@ export async function onRequestPost(context) {  // Contents of context object
         telemetryData(context);
     }
 
-    // img_url 未定义或为空的处理逻辑
-    if (typeof env.img_url == "undefined" || env.img_url == null || env.img_url == "") {
-        return new Response('Error: Please configure KV database', { status: 500 });
-    } 
+    // DB 未定义或为空的处理逻辑
+    if (typeof env.DB == "undefined" || env.DB == null) {
+        return new Response('Error: Please configure D1 database', { status: 500 });
+    }
 
     // 获取文件信息
     const time = new Date().getTime();
@@ -191,7 +191,9 @@ export async function onRequestPost(context) {  // Contents of context object
         while (true) {
             const shortId = generateShortId(8);
             const testFullId = normalizedFolder ? `${normalizedFolder}/${shortId}.${fileExt}` : `${shortId}.${fileExt}`;
-            if (await env.img_url.get(testFullId) === null) {
+            const stmtCheck = env.DB.prepare('SELECT id FROM image_metadata WHERE id = ?');
+            const existing = await stmtCheck.bind(testFullId).first();
+            if (existing === null) {
                 fullId = testFullId;
                 break;
             }
@@ -313,13 +315,22 @@ async function uploadFileToCloudflareR2(env, formdata, fullId, metadata, returnL
     let moderateUrl = `${R2PublicUrl}/${fullId}`;
     metadata = await moderateContent(env, moderateUrl, metadata);
 
-    // 写入KV数据库
+    // 写入D1数据库
     try {
-        await env.img_url.put(fullId, "", {
-            metadata: metadata,
-        });
+        const stmt = env.DB.prepare(`
+            INSERT INTO image_metadata (
+                id, file_name, file_type, file_size_mb, upload_ip, upload_address,
+                timestamp, folder_path, storage_channel, channel_name, value_placeholder
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        `);
+        await stmt.bind(
+            fullId, metadata.FileName, metadata.FileType, parseFloat(metadata.FileSize),
+            metadata.UploadIP, metadata.UploadAddress, metadata.TimeStamp, metadata.Folder,
+            metadata.Channel, metadata.ChannelName, ""
+        ).run();
     } catch (error) {
-        return new Response('Error: Failed to write to KV database', { status: 500 });
+        console.error("Failed to write to D1 database (R2):", error);
+        return new Response('Error: Failed to write to D1 database', { status: 500 });
     }
 
 
@@ -396,22 +407,52 @@ async function uploadFileToS3(env, formdata, fullId, metadata, returnLink, origi
 
         // 图像审查
         if (moderateContentApiKey) {
+            // 写入D1数据库 (S3 Moderate Content 前)
             try {
-                await env.img_url.put(fullId, "", { metadata });
-            } catch {
-                return new Response("Error: Failed to write to KV database", { status: 500 });
+                const stmt = env.DB.prepare(`
+                    INSERT INTO image_metadata (
+                        id, file_name, file_type, file_size_mb, upload_ip, upload_address,
+                        timestamp, folder_path, storage_channel, channel_name,
+                        s3_location, s3_endpoint, s3_region, s3_bucket_name, s3_file_key, value_placeholder
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                `);
+                await stmt.bind(
+                    fullId, metadata.FileName, metadata.FileType, parseFloat(metadata.FileSize),
+                    metadata.UploadIP, metadata.UploadAddress, metadata.TimeStamp, metadata.Folder,
+                    metadata.Channel, metadata.ChannelName,
+                    metadata.S3Location || null, metadata.S3Endpoint || null, metadata.S3Region || null,
+                    metadata.S3BucketName || null, metadata.S3FileKey || null, ""
+                ).run();
+            } catch (dbError) {
+                console.error("Failed to write to D1 database (S3 moderate):", dbError);
+                return new Response("Error: Failed to write to D1 database", { status: 500 });
             }
 
             const moderateUrl = `https://${originUrl.hostname}/file/${fullId}`;
             metadata = await moderateContent(env, moderateUrl, metadata);
+            // 注意：如果 moderateContent 修改了 metadata 并且需要更新到数据库，这里需要一个 UPDATE 语句
             await purgeCDNCache(env, moderateUrl, originUrl);
-        }
-
-        // 写入 KV 数据库
-        try {
-            await env.img_url.put(fullId, "", { metadata });
-        } catch {
-            return new Response("Error: Failed to write to KV database", { status: 500 });
+        } else {
+             // 如果没有图像审查，也需要写入D1
+            try {
+                const stmt = env.DB.prepare(`
+                    INSERT INTO image_metadata (
+                        id, file_name, file_type, file_size_mb, upload_ip, upload_address,
+                        timestamp, folder_path, storage_channel, channel_name,
+                        s3_location, s3_endpoint, s3_region, s3_bucket_name, s3_file_key, value_placeholder
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                `);
+                await stmt.bind(
+                    fullId, metadata.FileName, metadata.FileType, parseFloat(metadata.FileSize),
+                    metadata.UploadIP, metadata.UploadAddress, metadata.TimeStamp, metadata.Folder,
+                    metadata.Channel, metadata.ChannelName,
+                    metadata.S3Location || null, metadata.S3Endpoint || null, metadata.S3Region || null,
+                    metadata.S3BucketName || null, metadata.S3FileKey || null, ""
+                ).run();
+            } catch (dbError) {
+                console.error("Failed to write to D1 database (S3 no moderate):", dbError);
+                return new Response("Error: Failed to write to D1 database", { status: 500 });
+            }
         }
 
         return new Response(JSON.stringify([{ src: returnLink }]), {
@@ -524,19 +565,22 @@ async function uploadFileToTelegram(env, formdata, fullId, metadata, fileExt, fi
         const moderateUrl = `https://api.telegram.org/file/bot${tgBotToken}/${filePath}`;
         metadata = await moderateContent(env, moderateUrl, metadata);
 
-        // 更新metadata，写入KV数据库
+        // 写入D1数据库
         try {
-            metadata.Channel = "TelegramNew";
-            metadata.ChannelName = tgChannel.name;
-
-            metadata.TgFileId = id;
-            metadata.TgChatId = tgChatId;
-            metadata.TgBotToken = tgBotToken;
-            await env.img_url.put(fullId, "", {
-                metadata: metadata,
-            });
+            const stmt = env.DB.prepare(`
+                INSERT INTO image_metadata (
+                    id, file_name, file_type, file_size_mb, upload_ip, upload_address,
+                    timestamp, folder_path, storage_channel, channel_name, value_placeholder
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            `);
+            await stmt.bind(
+                fullId, metadata.FileName, metadata.FileType, parseFloat(metadata.FileSize),
+                metadata.UploadIP, metadata.UploadAddress, metadata.TimeStamp, metadata.Folder,
+                metadata.Channel, metadata.ChannelName, id
+            ).run();
         } catch (error) {
-            res = new Response('Error: Failed to write to KV database', { status: 500 });
+            console.error("Failed to write to D1 database (Telegram):", error);
+            return new Response('Error: Failed to write to D1 database', { status: 500 });
         }
     } catch (error) {
         res = new Response('upload error, check your environment params about telegram channel!', { status: 400 });
@@ -557,13 +601,28 @@ async function uploadFileToExternal(env, formdata, fullId, metadata, returnLink,
         return new Response('Error: No url provided', { status: 400 });
     }
     metadata.ExternalLink = extUrl;
-    // 写入KV数据库
+    metadata = await moderateContent(env, extUrl, metadata);
+
+    // 写入D1数据库
     try {
-        await env.img_url.put(fullId, "", {
-            metadata: metadata,
-        });
+        metadata.Channel = "External"; // 确保 Channel 和 ChannelName 被正确设置
+        metadata.ChannelName = uploadConfig.external?.channels?.[0]?.name || 'ExternalDefault';
+
+
+        const stmt = env.DB.prepare(`
+            INSERT INTO image_metadata (
+                id, file_name, file_type, file_size_mb, upload_ip, upload_address,
+                timestamp, folder_path, storage_channel, channel_name, value_placeholder
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        `);
+        await stmt.bind(
+            fullId, metadata.FileName, metadata.FileType, parseFloat(metadata.FileSize),
+            metadata.UploadIP, metadata.UploadAddress, metadata.TimeStamp, metadata.Folder,
+            metadata.Channel, metadata.ChannelName, extUrl // 使用 extUrl 作为 value_placeholder
+        ).run();
     } catch (error) {
-        return new Response('Error: Failed to write to KV database', { status: 500 });
+        console.error("Failed to write to D1 database (External):", error);
+        return new Response('Error: Failed to write to D1 database', { status: 500 });
     }
 
     // 返回结果
@@ -699,20 +758,32 @@ function isExtValid(fileExt) {
 }
 
 async function isBlockedUploadIp(env, uploadIp) {
-    // 检查是否配置了KV数据库
-    if (typeof env.img_url == "undefined" || env.img_url == null || env.img_url == "") {
+    // 检查是否配置了D1数据库
+    if (typeof env.DB === "undefined" || env.DB === null) {
+        // 如果D1未配置，可以认为没有IP被阻止，或者根据需要抛出错误
+        console.warn("D1 database is not configured. IP blocking check will be skipped.");
         return false;
     }
 
-    const kv = env.img_url;
-    let list = await kv.get("manage@blockipList");
-    if (list == null) {
-        list = [];
-    } else {
-        list = list.split(",");
-    }
+    const DB = env.DB;
+    try {
+        const stmt = DB.prepare('SELECT config_value FROM system_configs WHERE config_key = ?');
+        const result = await stmt.bind('manage@blockipList').first();
+        const listStr = result ? result.config_value : null;
+        
+        let list = [];
+        if (listStr) {
+            // 假设存储的是逗号分隔的字符串
+            // 如果是JSON数组字符串，则需要 JSON.parse(listStr)
+            list = listStr.split(",");
+        }
 
-    return list.includes(uploadIp);
+        return list.includes(uploadIp);
+    } catch (e) {
+        console.error("Error checking blocked IP from D1:", e);
+        // 发生错误时，为了安全起见，可以默认为不阻止，或根据策略处理
+        return false;
+    }
 }
 
 // 生成短链接

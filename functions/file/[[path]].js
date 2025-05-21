@@ -51,31 +51,52 @@ export async function onRequest(context) {  // Contents of context object
             return Response.redirect(new URL("/blockimg", request.url).href, 302); // Ensure URL is correctly formed
         }
     }
-    // 检查是否配置了 KV 数据库
-    if (typeof env.img_url == "undefined" || env.img_url == null || env.img_url == "") {
-        return new Response('Error: Please configure KV database', { status: 500 });
+    // 检查是否配置了 D1 数据库
+    if (typeof env.DB == "undefined" || env.DB == null) {
+        return new Response('Error: Please configure D1 database', { status: 500 });
     }
-    const imgRecord = await env.img_url.getWithMetadata(fileId);
-    if (!imgRecord) {
+
+    const stmt = env.DB.prepare('SELECT * FROM image_metadata WHERE id = ?');
+    const dbRecord = await stmt.bind(fileId).first();
+
+    if (!dbRecord) {
         return new Response('Error: Image Not Found', { status: 404 });
     }
-    // 如果metadata不存在，只可能是之前未设置KV，且存储在Telegraph上的图片
-    if (!imgRecord.metadata) {
-        imgRecord.metadata = {};
-    }
+
+    // 将数据库记录转换为旧的 metadata 和 imgRecord 格式，以便后续代码尽可能少改动
+    const metadata = {
+        FileName: dbRecord.file_name,
+        FileType: dbRecord.file_type,
+        FileSize: dbRecord.file_size_mb, 
+        UploadIP: dbRecord.upload_ip,
+        UploadAddress: dbRecord.upload_address,
+        TimeStamp: dbRecord.timestamp,
+        Folder: dbRecord.folder_path,
+        Channel: dbRecord.storage_channel,
+        ChannelName: dbRecord.channel_name,
+        S3Location: dbRecord.s3_location,
+        S3Endpoint: dbRecord.s3_endpoint,
+        S3Region: dbRecord.s3_region,
+        S3BucketName: dbRecord.s3_bucket_name,
+        S3FileKey: dbRecord.s3_file_key,
+        TgFileId: dbRecord.storage_channel === 'TelegramNew' ? dbRecord.value_placeholder : null, 
+        ExternalLink: dbRecord.storage_channel === 'External' ? dbRecord.value_placeholder : null,
+        ListType: dbRecord.list_type,
+        Label: dbRecord.label
+    };
     
-    const fileName = imgRecord.metadata?.FileName || fileId;
+    const fileName = metadata?.FileName || fileId;
     const encodedFileName = encodeURIComponent(fileName);
-    const fileType = imgRecord.metadata?.FileType || null;
+    const fileType = metadata?.FileType || null;
     
     // 检查文件可访问状态
-    let accessRes = await returnWithCheck(request, env, url, imgRecord);
+    let accessRes = await returnWithCheck(request, env, url, dbRecord);
     if (accessRes.status !== 200) {
         return accessRes; // 如果不可访问，直接返回
     }
     
     // Cloudflare R2渠道
-    if (imgRecord.metadata?.Channel === 'CloudflareR2') {
+    if (metadata?.Channel === 'CloudflareR2') {
         // 检查是否配置了R2
         if (typeof env.img_r2 == "undefined" || env.img_r2 == null || env.img_r2 == "") {
             return new Response('Error: Please configure R2 database', { status: 500 });
@@ -112,18 +133,18 @@ export async function onRequest(context) {  // Contents of context object
     }
 
     // S3渠道
-    if (imgRecord.metadata?.Channel === "S3") {
+    if (metadata?.Channel === "S3") {
         const s3Client = new S3Client({
-            region: imgRecord.metadata?.S3Region || "auto", // 默认使用 auto 区域
-            endpoint: imgRecord.metadata?.S3Endpoint,
+            region: metadata?.S3Region || "auto",
+            endpoint: metadata?.S3Endpoint,
             credentials: {
-                accessKeyId: imgRecord.metadata?.S3AccessKeyId,
-                secretAccessKey: imgRecord.metadata?.S3SecretAccessKey
+                accessKeyId: env.S3_ACCESS_KEY_ID,
+                secretAccessKey: env.S3_SECRET_ACCESS_KEY
             }
         });
 
-        const bucketName = imgRecord.metadata?.S3BucketName;
-        const key = imgRecord.metadata?.S3FileKey;
+        const bucketName = metadata?.S3BucketName;
+        const key = metadata?.S3FileKey;
 
         try {
             const command = new GetObjectCommand({
@@ -159,29 +180,30 @@ export async function onRequest(context) {  // Contents of context object
     }
 
     // 外链渠道
-    if (imgRecord.metadata?.Channel === 'External') {
+    if (metadata?.Channel === 'External') {
         // 直接重定向到外链
-        return Response.redirect(imgRecord.metadata?.ExternalLink, 302);
+        return Response.redirect(metadata?.ExternalLink, 302);
     }
     
     // Telegram及Telegraph渠道
     let TgFileID = ''; // Tg的file_id
-    if (imgRecord.metadata?.Channel === 'Telegram') {
-        // id为file_id + ext
-        TgFileID = fileId.split('.')[0];
-    } else if (imgRecord.metadata?.Channel === 'TelegramNew') {
-        // id为unique_id + file_name
-        TgFileID = imgRecord.metadata?.TgFileId;
-        if (TgFileID === null) {
-            return new Response('Error: Failed to fetch image', { status: 500 });
+    if (metadata?.Channel === 'Telegram') {
+        // id为file_id + ext (Old Telegram Channel, not TelegramNew)
+        // This part of logic might need review if 'Telegram' (old) channel is still actively used and how its metadata was stored.
+        // For 'TelegramNew', TgFileId is now directly from metadata.TgFileId (mapped from dbRecord.value_placeholder)
+        TgFileID = fileId.split('.')[0]; // Kept for old 'Telegram' channel logic, assuming fileId structure was consistent.
+    } else if (metadata?.Channel === 'TelegramNew') {
+        TgFileID = metadata?.TgFileId; // Already populated from dbRecord.value_placeholder
+        if (TgFileID === null || TgFileID === undefined || TgFileID === '') { // Check if it's actually null/empty
+            return new Response('Error: Failed to fetch image (Missing TgFileId)', { status: 500 });
         }
     } else {
         // 旧版telegraph
     }
     // 构建目标 URL
-    if (isTgChannel(imgRecord)) {
+    if (isTgChannel(metadata)) {
         // 获取TG图片真实地址
-        const TgBotToken = imgRecord.metadata?.TgBotToken || env.TG_BOT_TOKEN;
+        const TgBotToken = metadata?.TgBotToken || env.TG_BOT_TOKEN;
         const filePath = await getFilePath(TgBotToken, TgFileID);
         if (filePath === null) {
             return new Response('Error: Failed to fetch image path', { status: 500 });
@@ -223,7 +245,7 @@ export async function onRequest(context) {  // Contents of context object
     }
 }
 
-async function returnWithCheck(request, env, url, imgRecord) {
+async function returnWithCheck(request, env, url, dbRecord) {
     const response = new Response('good', { status: 200 });
 
     // Referer header equal to the dashboard page or upload page
@@ -232,28 +254,27 @@ async function returnWithCheck(request, env, url, imgRecord) {
         return response;
     }
 
-    if (typeof env.img_url == "undefined" || env.img_url == null || env.img_url == "") {
+    if (!dbRecord) {
+        return response;
     } else {
-        //check the record from kv
-        const record = imgRecord;
-        if (record.metadata === null) {
-        } else {
-            //if the record is not null, redirect to the image
-            if (record.metadata.ListType == "White") {
-                return response;
-            } else if (record.metadata.ListType == "Block") {
-                return await returnBlockImg(url);
-            } else if (record.metadata.Label == "adult") {
-                return await returnBlockImg(url);
-            }
-            //check if the env variables WhiteList_Mode are set
-            if (whiteListMode) {
-                //if the env variables WhiteList_Mode are set, redirect to the image
+        //if the record is not null, redirect to the image
+        if (dbRecord.list_type == "White") {
+            return response;
+        } else if (dbRecord.list_type == "Block") {
+            return await returnBlockImg(url);
+        } else if (dbRecord.label == "adult" || dbRecord.list_type === "adult") {
+            return await returnBlockImg(url);
+        }
+        //check if the env variables WhiteList_Mode are set
+        if (whiteListMode) {
+            //if the env variables WhiteList_Mode are set, and not explicitly whitelisted, block
+            if (dbRecord.list_type !== "White") {
                 return await returnWhiteListImg(url);
-            } else {
-                //if the env variables WhiteList_Mode are not set, redirect to the image
-                return response;
             }
+            return response; // Allow if explicitly whitelisted in whitelist mode
+        } else {
+            //if the env variables WhiteList_Mode are not set, redirect to the image
+            return response;
         }
     }
     // other cases
@@ -306,7 +327,7 @@ async function getFilePath(bot_token, file_id) {
 }
 
 function isTgChannel(imgRecord) {
-    return imgRecord.metadata?.Channel === 'Telegram' || imgRecord.metadata?.Channel === 'TelegramNew';
+    return imgRecord.Channel === 'Telegram' || imgRecord.Channel === 'TelegramNew';
 }
 
 async function return404(url) {

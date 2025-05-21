@@ -1,38 +1,48 @@
 import { purgeCFCache } from "../../../utils/purgeCache";
 
 export async function onRequest(context) {
-    // Contents of context object
     const {
-      request, // same as existing Worker API
-      env, // same as existing Worker API
-      params, // if filename includes [id] or [[path]]
-      waitUntil, // same as ctx.waitUntil in existing Worker API
-      next, // used for middleware or to fetch assets
-      data, // arbitrary space for passing data between middlewares
+        request,
+        env,
+        params,
     } = context;
 
-    // 组装 CDN URL
-    const url = new URL(request.url);
-    
-    if (params.path) {
-      params.path = String(params.path).split(',').join('/');
+    // 检查D1数据库是否配置
+    if (typeof env.DB === "undefined" || env.DB === null) {
+        return new Response('Error: Please configure D1 database', { status: 500 });
     }
-    const cdnUrl = `https://${url.hostname}/file/${params.path}`;
-    
-    // 解码params.path
-    params.path = decodeURIComponent(params.path);
+    const DB = env.DB;
 
-    //read the metadata
-    const value = await env.img_url.getWithMetadata(params.path);
+    try {
+        // 解码params.path并将其作为fileId
+        const fileId = decodeURIComponent(params.path.join('/'));
 
-    //change the metadata
-    value.metadata.ListType = "White"
-    await env.img_url.put(params.path,"",{metadata: value.metadata});
-    const info = JSON.stringify(value.metadata);
+        const stmt = DB.prepare('UPDATE image_metadata SET list_type = ? WHERE id = ?');
+        const info = await stmt.bind('White', fileId).run();
 
-    // 清除CDN缓存
-    await purgeCFCache(env, cdnUrl);
-
-    return new Response(info);
-
-  }
+        if (info.success && info.changes > 0) {
+            return new Response(JSON.stringify({ success: true, message: `File ${fileId} added to whitelist.` }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        } else if (info.success && info.changes === 0) {
+            return new Response(JSON.stringify({ success: false, error: 'File not found or no change made.' }), {
+                status: 404,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        } else {
+            const errorMessage = info.error || 'Failed to update file status in D1.';
+            console.error("D1 update error for white:", errorMessage);
+            return new Response(JSON.stringify({ success: false, error: errorMessage }), {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+    } catch (e) {
+        console.error("Error in white operation:", e);
+        return new Response(JSON.stringify({ success: false, error: e.message }), {
+            status: 400, 
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+}

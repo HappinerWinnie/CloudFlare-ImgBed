@@ -1,38 +1,71 @@
 export async function onRequest(context) {
-    // Contents of context object
     const {
-      request, // same as existing Worker API
-      env, // same as existing Worker API
-      params, // if filename includes [id] or [[path]]
-      waitUntil, // same as ctx.waitUntil in existing Worker API
-      next, // used for middleware or to fetch assets
-      data, // arbitrary space for passing data between middlewares
+      request,
+      env,
     } = context;
+
+    if (typeof env.DB === "undefined" || env.DB === null) {
+        return new Response(JSON.stringify({ error: 'D1 database not configured' }), {
+            status: 500, headers: { "Content-Type": "application/json" }
+        });
+    }
+    const DB = env.DB;
+    const configKey = 'manage@whiteipList'; // Specific key for IP whitelist
+
     try {
-        // 检查是否配置了KV数据库
-        if (typeof env.img_url == "undefined" || env.img_url == null || env.img_url == "") {
-            return new Response('Error: Please configure KV database', { status: 500 });
+        // For GET request, return the current whitelist
+        if (request.method === 'GET') {
+            const stmtSelect = DB.prepare('SELECT config_value FROM system_configs WHERE config_key = ?');
+            const result = await stmtSelect.bind(configKey).first();
+            const listStr = result ? result.config_value : '[]'; // Default to empty JSON array string
+            // Assuming the list is stored as a JSON array string: e.g., "[\"ip1\",\"ip2\"]"
+            // Or as a comma-separated string: "ip1,ip2"
+            // Let's assume comma-separated for consistency with blockipList, but JSON array is safer.
+            // For this implementation, stick to comma-separated for now.
+            return new Response(listStr || '' , { 
+                status: 200,
+                headers: { 'Content-Type': 'text/plain' } // KV returned plain text
+            });
         }
 
-        const kv = env.img_url;
-        let list = await kv.get("manage@blockipList");
-        if (list == null) {
-            list = [];
-        } else {
-            list = list.split(",");
-        }
-
-        //从请求body中获取要white的ip
         const ip = await request.text();
-        if (ip == null || ip == "") {
-            return new Response('Error: Please input ip', { status: 400 });
+        if (!ip || ip.trim() === "") {
+            return new Response(JSON.stringify({ error: 'Please input IP' }), {
+                status: 400, headers: { "Content-Type": "application/json" }
+            });
         }
 
-        //将ip从list中删除
-        list = list.filter(item => item !== ip);
-        await kv.put("manage@blockipList", list.join(","));
-        return new Response('delete ip from block ip list successfully', { status: 200 });
+        // Fetch current list
+        const stmtSelect = DB.prepare('SELECT config_value FROM system_configs WHERE config_key = ?');
+        const result = await stmtSelect.bind(configKey).first();
+        let listStr = result ? result.config_value : null;
+        let listArray = listStr ? listStr.split(',').filter(Boolean) : []; // Filter out empty strings
+
+        if (request.method === 'POST') { // Add IP to whitelist
+            if (!listArray.includes(ip)) {
+                listArray.push(ip);
+            }
+            const stmtUpdate = DB.prepare('INSERT OR REPLACE INTO system_configs (config_key, config_value) VALUES (?, ?)');
+            await stmtUpdate.bind(configKey, listArray.join(',')).run();
+            return new Response(JSON.stringify({ success: true, message: `IP ${ip} added to whitelist.` }), {
+                status: 200, headers: { "Content-Type": "application/json" }
+            });
+        } else if (request.method === 'DELETE') { // Remove IP from whitelist
+            listArray = listArray.filter(item => item !== ip);
+            const stmtUpdate = DB.prepare('INSERT OR REPLACE INTO system_configs (config_key, config_value) VALUES (?, ?)');
+            await stmtUpdate.bind(configKey, listArray.join(',')).run();
+            return new Response(JSON.stringify({ success: true, message: `IP ${ip} removed from whitelist.` }), {
+                status: 200, headers: { "Content-Type": "application/json" }
+            });
+        } else {
+            return new Response(JSON.stringify({ error: 'Method Not Allowed' }), {
+                status: 405, headers: { "Content-Type": "application/json" }
+            });
+        }
     } catch (e) {
-        return new Response('delete ip from block ip list failed', { status: 500 });
+        console.error(`Error in ${configKey} operation:`, e);
+        return new Response(JSON.stringify({ error: `Failed to update ${configKey}.`, details: e.message }), {
+            status: 500, headers: { "Content-Type": "application/json" }
+        });
     }
 }

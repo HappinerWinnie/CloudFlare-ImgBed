@@ -3,49 +3,71 @@ export async function onRequest(context) {
     const {
       request, // same as existing Worker API
       env, // same as existing Worker API
-      params, // if filename includes [id] or [[path]]
-      waitUntil, // same as ctx.waitUntil in existing Worker API
-      next, // used for middleware or to fetch assets
-      data, // arbitrary space for passing data between middlewares
+      // params, // if filename includes [id] or [[path]]
+      // waitUntil, // same as ctx.waitUntil in existing Worker API
+      // next, // used for middleware or to fetch assets
+      // data, // arbitrary space for passing data between middlewares
     } = context;
 
-    const kv = env.img_url
+    // 检查D1数据库是否配置
+    if (typeof env.DB === "undefined" || env.DB === null) {
+        return new Response('Error: Please configure D1 database', { status: 500 });
+    }
+    const DB = env.DB;
 
     // GET读取设置
     if (request.method === 'GET') {
-        const settings = await getPageConfig(kv, env)
+        const settings = await getPageConfig(DB, env); // Pass DB instead of kv
 
         return new Response(JSON.stringify(settings), {
             headers: {
                 'content-type': 'application/json',
             },
-        })
+        });
     }
 
     // POST保存设置
     if (request.method === 'POST') {
-        const body = await request.json()
-        const settings = body
-        // 写入 KV
-        await kv.put('manage@sysConfig@page', JSON.stringify(settings))
-
-        return new Response(JSON.stringify(settings), {
-            headers: {
-                'content-type': 'application/json',
-            },
-        })
+        const body = await request.json();
+        // 写入 D1
+        try {
+            const stmt = DB.prepare('INSERT OR REPLACE INTO system_configs (config_key, config_value) VALUES (?, ?)');
+            await stmt.bind('manage@sysConfig@page', JSON.stringify(body)).run();
+            return new Response(JSON.stringify(body), {
+                headers: {
+                    'content-type': 'application/json',
+                },
+            });
+        } catch (e) {
+            console.error("Failed to save page config to D1:", e);
+            return new Response(JSON.stringify({ error: "Failed to save settings." }), {
+                status: 500,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
     }
-
+    
+    return new Response('Method not allowed', { status: 405 });
 }
 
-export async function getPageConfig(kv, env) {
-    const settings = {}
-    // 读取KV中的设置
-    const settingsStr = await kv.get('manage@sysConfig@page')
-    const settingsKV = settingsStr ? JSON.parse(settingsStr) : {}
+export async function getPageConfig(DB, env) { // Changed kv to DB
+    const settings = {};
+    // 读取D1中的设置
+    let settingsKV = {};
+    try {
+        const stmt = DB.prepare('SELECT config_value FROM system_configs WHERE config_key = ?');
+        const result = await stmt.bind('manage@sysConfig@page').first();
+        const settingsStr = result ? result.config_value : null;
+        if (settingsStr) {
+            settingsKV = JSON.parse(settingsStr);
+        }
+    } catch (e) {
+        console.error("Failed to fetch page config from D1:", e);
+        // Continue with defaults if D1 read fails
+    }
 
-    const config = []
-    settings.config = config
+    const config = [];
+    settings.config = config;
     config.push(
         {
             id: 'siteTitle',
@@ -101,17 +123,17 @@ export async function getPageConfig(kv, env) {
             label: '默认URL前缀',
             tooltip: '自定义URL前缀，如：https://img.a.com/file/，留空则使用当前域名 <br/> 设置后将应用于上传和管理界面',
         }
-    )
+    );
 
-    const userConfig = env.USER_CONFIG
+    const userConfig = env.USER_CONFIG;
     if (userConfig) {
         try {
-            const parsedConfig = JSON.parse(userConfig)
+            const parsedConfig = JSON.parse(userConfig);
             if (typeof parsedConfig === 'object' && parsedConfig !== null) {
                 // 搜索config中的id，如果存在则更新
                 for (let i = 0; i < config.length; i++) {
                     if (parsedConfig[config[i].id]) {
-                        config[i].value = parsedConfig[config[i].id]
+                        config[i].value = parsedConfig[config[i].id];
                     }
                 }
             }
@@ -120,14 +142,14 @@ export async function getPageConfig(kv, env) {
         }
     }
 
-    // 用KV中的设置覆盖默认设置
+    // 用D1中的设置覆盖默认设置 (renamed settingsKV to reflect it came from D1)
     for (let i = 0; i < settingsKV.config?.length; i++) {
-        const item = settingsKV.config[i]
-        const index = config.findIndex(x => x.id === item.id)
+        const item = settingsKV.config[i];
+        const index = config.findIndex(x => x.id === item.id);
         if (index !== -1) {
-            config[index].value = item.value
+            config[index].value = item.value;
         }
     }
 
-    return settings
+    return settings;
 }

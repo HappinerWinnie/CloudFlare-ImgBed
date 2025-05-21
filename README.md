@@ -63,7 +63,7 @@
 
 > 由于telegraph图床被滥用，该项目上传渠道已切换至Telegram Channel，请**更新至最新版（更新方式见第3.1章最后一节）**，按照文档中的部署要求**设置`TG_BOT_TOKEN`和`TG_CHAT_ID`**，否则将无法正常使用上传功能。
 >
-> 此外，目前**KV数据库为必须配置**，如果以前未配置请按照文档说明配置。
+> 此外，目前**D1数据库为必须配置**，如果以前未配置请按照文档说明配置。
 >
 > 出现问题，请先查看第5节常见问题Q&A部分。
 
@@ -221,7 +221,7 @@ Add Features:
 
 - 管理端支持拉黑上传IP（Dashboard->用户管理->允许上传）
 - 管理端批量操作支持按照用户选择的顺序进行（[#issue124](https://github.com/MarSeventh/CloudFlare-ImgBed/issues/124)）
-- `random`接口优化，减少KV操作次数，增加`content`参数，支持返回指定类型的文件
+- `random`接口优化，减少数据库操作次数，增加`content`参数，支持返回指定类型的文件
 - 接入CloudFlare Cache API，提升 list 相关接口访问速度
 - 正常读取返回图片的CDN缓存时间从1年调整为7天，防止缓存清除不成功的情况下图片长时间内仍可以访问的问题
 
@@ -491,7 +491,7 @@ Add Features:
 
   2. 创建一个新的频道（Channel），进入新建的频道，选择频道管理，将刚才创建的机器人设为频道管理员。
 
-     <img src="static/readme/202409071758534.png" style="display:inline-block; width:33%"/><img src="static/readme/202409071758796.png" style="display:inline-block; width:32%"/><img src="static/readme/202410291531473.png" style="width:33%;display: inline-block" />
+     <img src="static/readme/202409071758534.png" style="display:inline-block; width:33%"/><img src="static/readme/202410291531473.png" style="width:33%;display: inline-block" />
 
   3. 向[@VersaToolsBot](https://t.me/VersaToolsBot)**转发**一条第2步新建频道中的消息，获取`TG_CHAT_ID`（频道ID）
 
@@ -553,15 +553,15 @@ Add Features:
 
    ![image-20250206182329361](static/readme/202502061823616.png)
 
-5. **绑定KV数据库**：
+5. **绑定D1数据库**：
 
-   - 创建一个新的KV数据库
+   - 创建一个新的D1数据库 (可参考Cloudflare官方文档)
 
      > ![](static/readme/202408261035367.png)
      >
      > ![](static/readme/202408261037971.png)
 
-   - 进入项目对应`设置`->`绑定`->`添加`->`KV 命名空间`->`变量名称`，填写`img_url`，`KV命名空间`选择刚才创建好的KV数据库
+   - 进入项目对应`设置`->`函数`->`D1 数据库绑定`->`添加绑定`，`变量名称`填写`DB`，`D1 数据库`选择刚才创建好的D1数据库。
 
 6. **重试部署**：前往项目管理界面->`部署`->`最新一次部署后面的···`->`重试部署`
 
@@ -569,7 +569,7 @@ Add Features:
 
    - `Cloudflare R2`渠道：
 
-     将前面新建的存储桶绑定到项目（和KV绑定地方一样），**名称**为`img_r2`
+     将前面新建的存储桶绑定到项目（和D1数据库绑定地方类似），**名称**为`img_r2`
 
      > ![](static/readme/202411052323183.png)
 
@@ -636,7 +636,7 @@ Add Features:
    "scripts": {
        "ci-test": "concurrently --kill-others \"npm start\" \"wait-on http://localhost:8080 && mocha\"",
        "test": "mocha",
-       "start": "npx wrangler pages dev ./ --kv \"img_url\" --r2 \"img_r2\" --port 8080 --persist-to ./data"
+       "start": "npx wrangler pages dev ./ --r2 \"img_r2\" --port 8080 --persist-to ./data"
      }
    ```
 
@@ -811,7 +811,7 @@ Web端在登录页面输入你的**认证码**即可登录使用；API端需要�
 
 ## 3.2定制化修改
 
-按照`3.1`步骤部署完成后，前往仓库[MarSeventh/Sanyue-ImgHub](https://github.com/MarSeventh/Sanyue-ImgHub?tab=readme-ov-file)，按照操作说明进行DIY和打包操作，最后将打包好的`/dist`目录中的内容替换到该仓库的根目录下即可（复制+替换）。
+按照`3.1`步骤部署完成后，前往仓库[MarSeventh/Sanyue-ImgHub](https://github.com/MarSeventh/Sanyue-ImgHub)，按照操作说明进行DIY和打包操作，最后将打包好的`/dist`目录中的内容替换到该仓库的根目录下即可（复制+替换）。
 
 # 4.Usage
 
@@ -916,7 +916,7 @@ Web端在登录页面输入你的**认证码**即可登录使用；API端需要�
 9. :white_check_mark:~~支持大于5MB的图片上传前自动压缩~~（2024.8.26已完成）
 10. :white_check_mark:~~上传页面右下角工具栏样式重构，支持上传页自定义压缩（上传前+存储端）~~（2024.9.28已完成）
 11. :white_check_mark:~~重构管理端，认证+显示效果优化，增加图片详情页~~（2024.12.20已完成）
-12. :white_check_mark:~~管理端增加访问量统计，IP记录、IP黑名单、上传IP黑名单等~~（2024.12.20已支持上传ip黑名单，访问记录由于对KV读写消耗太大，暂时搁置）
+12. :white_check_mark:~~管理端增加访问量统计，IP记录、IP黑名单、上传IP黑名单等~~（2024.12.20已支持上传ip黑名单，访问记录由于对D1读写消耗太大，暂时搁置）
 13. :white_check_mark:~~上传页面点击链接，自动复制到剪切板~~(2024.9.27已完成)
 14. :white_check_mark:~~上传设置记忆（上传方式、链接格式等）~~（2024.9.27已完成，**两种上传方式合并**）
 15. :white_check_mark:~~若未设置密码，无需跳转进入登录页~~（2024.9.27已完成）
@@ -947,11 +947,11 @@ Web端在登录页面输入你的**认证码**即可登录使用；API端需要�
 35. :white_check_mark:~~接入S3 API渠道~~（2024.2.3已完成）
 36. :white_check_mark:~~支持短链接命名方式~~（2025.2.1已完成）
 37. :white_check_mark:~~支持深色模式~~（2025.1.11已完成）
-38. :hourglass_flowing_sand:支持KV备份恢复功能
-39. :white_check_mark:~~页脚可自定义隐藏~~（2025.2.4已完成）
-40. :hourglass_flowing_sand:搜索功能增强
-41. :white_check_mark:支持粘贴多个链接，支持外链管理
-42. :hourglass_flowing_sand:上传文件记录MD5，支持文件硬链接
+38. :hourglass_flowing_sand:Telegram Bot渠道增加转发用户消息的功能
+39. :hourglass_flowing_sand:支持图片压缩
+40. :hourglass_flowing_sand:支持数据库备份恢复功能
+41. :hourglass_flowing_sand:支持通过token上传图片
+42. :hourglass_flowing_sand:文件夹内图片支持批量移动、删除
 43. :hourglass_flowing_sand:上传页面增加最近上传展示
 
 </details>
@@ -963,13 +963,13 @@ Web端在登录页面输入你的**认证码**即可登录使用；API端需要�
 
 
 1. :white_check_mark:~~修复API上传无法直接展示在后台的问题~~（2024.7.25已修复）
-1. :white_check_mark:~~由于telegra.ph关闭上传，迁移至TG频道上传~~（2024.9.7已修复）
-1. :white_check_mark:~~修复未设管理员认证时管理端无限刷新的问题~~（2024.9.9已修复）
-1. :white_check_mark:~~修复部分视频无法预览播放的问题~~（经测试，暂定为文件自身存在问题，暂无法修复）
-1. :hourglass_flowing_sand:增加新的图片审查渠道
-1. :white_check_mark:~~R2渠道在管理端删除时，存储桶同步删除~~（2024.12.4已修复）
-1. :white_check_mark:~~读取文件响应头增加允许跨域头`access-control-allow-origin: *`~~（2024.12.9已修复）
-1. :white_check_mark:~~上传界面加入访问限制白名单~~（2024.12.11已修复）
+2. :white_check_mark:~~由于telegra.ph关闭上传，迁移至TG频道上传~~（2024.9.7已修复）
+3. :white_check_mark:~~修复未设管理员认证时管理端无限刷新的问题~~（2024.9.9已修复）
+4. :white_check_mark:~~修复部分视频无法预览播放的问题~~（经测试，暂定为文件自身存在问题，暂无法修复）
+5. :hourglass_flowing_sand:增加新的图片审查渠道
+6. :white_check_mark:~~R2渠道在管理端删除时，存储桶同步删除~~（2024.12.4已修复）
+7. :white_check_mark:~~读取文件响应头增加允许跨域头`access-control-allow-origin: *`~~（2024.12.9已修复）
+8. :white_check_mark:~~上传界面加入访问限制白名单~~（2024.12.11已修复）
 
 </details>
 
@@ -999,7 +999,7 @@ Web端在登录页面输入你的**认证码**即可登录使用；API端需要�
 
 - 是否正确配置`TG_BOT_TOKEN`、`TG_CHAT_ID`等环境变量
 - 是否给机器人管理员配置**足够的权限**
-- 是否**正确绑定KV数据库**
+- 是否**正确绑定D1数据库**
 - 是否更新至**最新版**
 - 前往issues寻找相似问题
 

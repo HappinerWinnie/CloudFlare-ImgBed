@@ -80,8 +80,12 @@ async function authentication(context) {
   basicPass = securityConfig.auth.admin.adminPassword
 
   //check if the env variables Disable_Dashboard are set
-  if (typeof context.env.img_url == "undefined" || context.env.img_url == null || context.env.img_url == "") {
-      return new Response('Dashboard is disabled. Please bind a KV namespace to use this feature.', { status: 200 });
+  // if (typeof context.env.img_url == "undefined" || context.env.img_url == null || context.env.img_url == "") {
+  //    return new Response('Dashboard is disabled. Please bind a KV namespace to use this feature.', { status: 200 });
+  // }
+  // Check if D1 Database is bound
+  if (typeof context.env.DB == "undefined" || context.env.DB == null) {
+      return new Response('Dashboard is disabled. Please bind a D1 Database to use this feature.', { status: 200 });
   }
 
   if(typeof basicUser == "undefined" || basicUser == null || basicUser == ""){
@@ -89,13 +93,12 @@ async function authentication(context) {
   }else{
       if (context.request.headers.has('Authorization')) {
           // Throws exception when authorization fails.
-          const { user, pass } = basicAuthentication(context.request);                         
+          const { user, pass } = basicAuthentication(context.request);
               if (basicUser !== user || basicPass !== pass) {
                   return UnauthorizedException('Invalid credentials.');
               }else{
                   return context.next();
               }
-          
       } else {
           return new Response('You need to login.', {
               status: 401,
@@ -106,8 +109,7 @@ async function authentication(context) {
               },
           });
       }
-  }  
-  
+  }
 }
 
 export const onRequest = [errorHandling, authentication];
